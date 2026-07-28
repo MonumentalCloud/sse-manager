@@ -62,6 +62,11 @@ class Settings:
     strict: bool
     log_raw: bool
 
+    hitl_enabled: bool
+    hitl_expires_seconds: float
+    hitl_max_pending_per_run: int
+    hitl_max_active_runs: int
+
     def _url(self, path: str) -> str:
         return self.base_url.rstrip("/") + path.format(workflow_id=self.workflow_id)
 
@@ -88,6 +93,7 @@ def load_settings(path: pathlib.Path | None = None) -> Settings:
     stream = raw["stream"]
     protocol = raw["protocol"]
     development = raw["development"]
+    hitl = raw["hitl"]
 
     api_key_env = _env("SSE_RELAY_API_KEY_ENV", orchestrator["api_key_env"], str)
     try:
@@ -118,4 +124,8 @@ def load_settings(path: pathlib.Path | None = None) -> Settings:
         mcp_agent_name=_env("SSE_RELAY_MCP_AGENT_NAME", protocol["mcp_agent_name"], str),
         strict=_env("SSE_RELAY_STRICT", bool(development["strict"]), _as_bool),
         log_raw=_env("SSE_RELAY_LOG_RAW", bool(development["log_raw"]), _as_bool),
+        hitl_enabled=_env("SSE_RELAY_HITL_ENABLED", bool(hitl["enabled"]), _as_bool),
+        hitl_expires_seconds=_env("SSE_RELAY_HITL_EXPIRES_SECONDS", float(hitl["expires_seconds"]), float),
+        hitl_max_pending_per_run=_env("SSE_RELAY_HITL_MAX_PENDING_PER_RUN", int(hitl["max_pending_per_run"]), int),
+        hitl_max_active_runs=_env("SSE_RELAY_HITL_MAX_ACTIVE_RUNS", int(hitl["max_active_runs"]), int),
     )

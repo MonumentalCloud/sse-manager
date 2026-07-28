@@ -53,15 +53,37 @@ logs and a GenOS usage-log entry together.
   arrives at the very end. That real id is on `run.end` as
   `orchestrator_message_id`.
 
+### Human-in-the-loop events
+
+| event | when | data |
+| ----- | ---- | ---- |
+| `interaction.required` | an ask_user MCP tool call reached `/hitl` | `interaction_id`, `type`, `prompt`, `options`, `resume_token`, `expires_in_s` |
+| `interaction.resolved` | the user answered, or the window expired | `interaction_id`, `resolution` (`answered`/`expired`), `resume_token` |
+
+These do not come from the orchestrator's stream. The agent calls an `ask_user`
+MCP tool; that tool POSTs `/hitl {session_id, prompt, type, options}` to us and
+blocks; we emit `interaction.required` on the live stream for that session; the
+frontend answers with `POST /interactions/{interaction_id}/resolve {answer}`;
+`/hitl` returns the answer as the tool's result and the run continues on the
+same stream. If nobody answers within `hitl.expires_seconds`, the tool gets
+`{status: "expired"}` and the stream gets `interaction.resolved` with
+`resolution: "expired"`.
+
+`/ask` requests without a `session_id` cannot receive interactions — the MCP
+tool has no name for the run.
+
+The registry behind this holds one entry per open stream, removed in the same
+`finally` that closes the stream — its size tracks concurrent runs, never total
+users. Bounds live in `config.toml` under `[hitl]`; occupancy is visible at
+`GET /healthz/hitl`. It is in-process state: correct on today's single-process
+deploy, and the flagged Redis work item the day the serving scales out.
+
 ### Events in the document that we do not send
 
-`plan.created`, `interaction.required`, `interaction.resolved`.
-
-The orchestrator emits nothing that corresponds to a plan or to a
-human-in-the-loop pause — see `docs/orchestrator-events.md` for the full list of
-what it does emit. Producing these would mean inventing them. Each becomes one
-line in `inbound.py` and one in `outbound.py` when the orchestrator starts
-sending something real behind them.
+`plan.created` — the orchestrator emits nothing that corresponds to a plan; see
+`docs/orchestrator-events.md` for what it does emit. Producing it would mean
+inventing it. It becomes one line in `inbound.py` and one in `outbound.py` when
+the orchestrator starts sending something real behind it.
 
 ## Changing this protocol
 

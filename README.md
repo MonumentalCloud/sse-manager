@@ -122,6 +122,20 @@ uv run tools/disconnect_test.py                             # prove cancellation
 orchestrator changes; `analyze_capture.py` will show any event type the rules do
 not know about yet.
 
+## Human-in-the-loop
+
+The agent asks the user something mid-run by calling an `ask_user` MCP tool,
+which POSTs `/hitl` to this service and blocks. We emit `interaction.required`
+on the session's live stream; the frontend answers via
+`POST /interactions/{id}/resolve`; `/hitl` returns the answer as the tool's
+result. Expiry, per-run pending caps, and the global run cap are all in
+`config.toml` under `[hitl]`; occupancy is at `GET /healthz/hitl`. Details and
+event shapes: [`docs/frontend-protocol.md`](docs/frontend-protocol.md).
+
+Still to verify on the MCP-server side before the loop closes end to end:
+that the orchestrator's `chatId` reaches tool invocations (the correlation
+key), and how long a Flowise tool call may block (sets `hitl.expires_seconds`).
+
 ## Telemetry
 
 Real telemetry is coming as Langfuse, in decorator style. Nothing here invents a

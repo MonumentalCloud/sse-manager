@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from .config import Settings, load_settings
 from .engine import Transformer
 from .events import RunFinished
+from .hitl import HitlError, Registry
 from .outbound import RunContext, WireEvent, error_event
 from .protocol import PING, Sequencer, TraceIds
 from .telemetry import RequestLog
@@ -39,10 +40,30 @@ class AskRequest(BaseModel):
     user_id: str | None = None
 
 
+class HitlRequest(BaseModel):
+    """What the ask_user MCP tool sends us. session_id is the chatId it was
+    given by the orchestrator — that is the correlation to the live stream."""
+
+    session_id: str
+    prompt: str
+    type: str = "disambiguation"
+    options: list[dict] | None = None
+
+
+class ResolveRequest(BaseModel):
+    answer: str | dict
+
+
 def get_settings() -> Settings:
     if not hasattr(app.state, "settings"):
         app.state.settings = load_settings()
     return app.state.settings
+
+
+def get_registry() -> Registry:
+    if not hasattr(app.state, "registry"):
+        app.state.registry = Registry(get_settings())
+    return app.state.registry
 
 
 @app.on_event("startup")
@@ -70,6 +91,36 @@ async def _startup() -> None:
 @app.get("/health")  # the GenOS serving harness probes this exact path
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/healthz/hitl")
+async def healthz_hitl() -> dict[str, int]:
+    """Registry occupancy — how many live runs and open questions right now."""
+    return get_registry().stats()
+
+
+@app.post("/hitl")
+async def hitl(body: HitlRequest) -> JSONResponse:
+    """Called by the ask_user MCP tool. Blocks until the user answers or the
+    window closes; the response body is the tool's return value."""
+    settings = get_settings()
+    if not settings.hitl_enabled:
+        return JSONResponse({"error": "hitl is disabled (hitl.enabled in config.toml)"}, status_code=404)
+    try:
+        result = await get_registry().request(body.session_id, body.prompt, body.type, body.options)
+        return JSONResponse(result)
+    except HitlError as exc:
+        return JSONResponse({"error": exc.message}, status_code=exc.status_code)
+
+
+@app.post("/interactions/{interaction_id}/resolve")
+async def resolve_interaction(interaction_id: str, body: ResolveRequest) -> JSONResponse:
+    """Called by the frontend with the user's choice."""
+    try:
+        result = await get_registry().resolve(interaction_id, body.answer)
+        return JSONResponse(result)
+    except HitlError as exc:
+        return JSONResponse({"error": exc.message}, status_code=exc.status_code)
 
 
 @app.get("/healthz/upstream")
@@ -148,6 +199,20 @@ async def _relay(
     sequencer = Sequencer(trace_id=trace.public, timezone=settings.timezone)
     queue: asyncio.Queue = asyncio.Queue()
 
+    # HITL correlation needs a session id — without one the MCP tool has no way
+    # to name this run, so there is nothing to register.
+    hitl_run = None
+    if settings.hitl_enabled and body.session_id:
+        try:
+            hitl_run = get_registry().register(body.session_id, trace.public, queue)
+        except HitlError as exc:
+            # The backstop cap. Refuse loudly rather than grow without bound.
+            yield sequencer.encode(error_event(settings, exc.message))
+            yield sequencer.encode(WireEvent("run.end", {"status": "error", "message_id": None, "usage": None,
+                                                         "chat_id": body.session_id, "orchestrator_message_id": None,
+                                                         "result": None}))
+            return
+
     log.info(
         "[%s] ask question=%r session_id=%s genos_trace_id=%s",
         trace.public,
@@ -199,8 +264,10 @@ async def _relay(
                 yield chunk
             request_log.finished(reason, detail)
             await _cancel(pump)
-            raise
+            raise  # hitl unregister happens in finally below
     finally:
+        if hitl_run is not None:
+            get_registry().unregister(hitl_run)
         await _cancel(pump)
 
     # Normal finish and client disconnect both land here. Whatever the rules are

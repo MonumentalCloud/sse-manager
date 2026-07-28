@@ -53,3 +53,20 @@ strict = true                                 # SSE_RELAY_STRICT
 # Log every incoming line exactly as received. When a stream misbehaves you
 # need the raw text, not a summary.
 log_raw = true                                # SSE_RELAY_LOG_RAW
+
+[hitl]
+# Human-in-the-loop. The registry that backs this holds one entry per OPEN
+# stream, removed the moment the stream closes — size scales with concurrent
+# runs, not with total users. These are the bounds on top of that.
+enabled = true                                # SSE_RELAY_HITL_ENABLED
+
+# How long a question to the user stays open before the agent gets a timeout
+# answer. Must stay under the Flowise/MCP tool-execution timeout once known.
+expires_seconds = 120.0                       # SSE_RELAY_HITL_EXPIRES_SECONDS
+
+# One run should not queue questions. >1 only to allow a follow-up racing in.
+max_pending_per_run = 2                       # SSE_RELAY_HITL_MAX_PENDING_PER_RUN
+
+# Backstop: /ask beyond this returns 503 instead of growing without bound.
+# 10k concurrent streams ≈ a few MB of registry; raise deliberately.
+max_active_runs = 10000                       # SSE_RELAY_HITL_MAX_ACTIVE_RUNS
