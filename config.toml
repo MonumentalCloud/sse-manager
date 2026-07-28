@@ -1,0 +1,55 @@
+# Every link and every knob, in one place.
+#
+# This service is meant to travel, so nothing here should require editing code.
+# Any value can be overridden by the environment variable named beside it, which
+# is what a GenOS code serving will actually use.
+#
+# The API key is deliberately NOT in this file — it is read from the environment
+# variable named by orchestrator.api_key_env, so this file stays safe to commit.
+
+[orchestrator]
+base_url = "https://genos.genon.ai"           # SSE_RELAY_BASE_URL
+workflow_id = "4848"                          # SSE_RELAY_WORKFLOW_ID
+api_key_env = "orchestrator_key"              # SSE_RELAY_API_KEY_ENV
+
+# Paths, in case GenOS moves them. {workflow_id} is substituted.
+run_path = "/api/gateway/workflow/{workflow_id}/run/v2"
+healthcheck_path = "/api/gateway/workflow/{workflow_id}/healthcheck"
+
+[timeouts]
+connect_seconds = 10.0                        # SSE_RELAY_CONNECT_TIMEOUT
+write_seconds = 30.0                          # SSE_RELAY_WRITE_TIMEOUT
+
+# Seconds to wait for the next piece of data from the orchestrator before
+# treating the connection as dead. 0 means never, which is the right answer
+# while sub-agents can think for minutes without sending anything. If you set
+# this, set it from the slowest sub-agent we actually have, not from a default.
+read_seconds = 0                              # SSE_RELAY_READ_TIMEOUT
+
+# A single `data:` block carrying the full node dump ran past 400 KB in job
+# zero, so the usual line-length defaults are far too small.
+max_block_bytes = 8388608                     # SSE_RELAY_MAX_BLOCK_BYTES
+
+[stream]
+# Network equipment between us and the browser drops a connection that has been
+# quiet for a while, and a thinking sub-agent looks exactly like a dead socket.
+heartbeat_seconds = 10.0                      # SSE_RELAY_HEARTBEAT_SECONDS
+
+[protocol]
+trace_id_prefix = "mnm"                       # SSE_RELAY_TRACE_ID_PREFIX
+channel = "monimo_app"                        # SSE_RELAY_CHANNEL
+timezone = "+09:00"                           # SSE_RELAY_TIMEZONE
+
+# The label a sub-agent call is reported under. Every sub-agent reachable from
+# this orchestrator sits behind one MCP node, so the specific sub-agent lands in
+# `skill` and this is what goes in `agent`.
+mcp_agent_name = "genos_mcp"                  # SSE_RELAY_MCP_AGENT_NAME
+
+[development]
+# Stop loudly on anything unexpected. Leave this on during development; turning
+# it off is a production decision to make deliberately, later.
+strict = true                                 # SSE_RELAY_STRICT
+
+# Log every incoming line exactly as received. When a stream misbehaves you
+# need the raw text, not a summary.
+log_raw = true                                # SSE_RELAY_LOG_RAW

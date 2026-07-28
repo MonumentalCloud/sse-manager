@@ -8,7 +8,6 @@ two of these running side by side.
 """
 
 import asyncio
-import json
 import logging
 from typing import AsyncIterator
 
@@ -20,8 +19,9 @@ from pydantic import BaseModel
 from .config import Settings, load_settings
 from .engine import Transformer
 from .events import RunFinished
-from .outbound import WireEvent
-from .telemetry import RequestLog, new_request_id
+from .outbound import RunContext, WireEvent, error_event
+from .protocol import PING, Sequencer, TraceIds
+from .telemetry import RequestLog
 
 log = logging.getLogger("sse_relay")
 
@@ -34,7 +34,8 @@ class ClientGone(Exception):
 
 class AskRequest(BaseModel):
     question: str
-    chat_id: str | None = None
+    session_id: str | None = None
+    user_turn_id: str | None = None
     user_id: str | None = None
 
 
@@ -50,13 +51,18 @@ async def _startup() -> None:
     settings = get_settings()
     # Build the rule tables once at boot. A malformed table is a startup failure,
     # not something a user discovers halfway through a stream.
-    Transformer(settings, RequestLog(request_id="startup-check", log_raw=False))
+    Transformer(
+        settings,
+        RequestLog(request_id="startup-check", log_raw=False),
+        RunContext(settings=settings, session_id=None, user_turn_id=None),
+    )
     log.info(
-        "sse-relay up — orchestrator=%s strict=%s log_raw=%s heartbeat=%ss",
+        "sse-relay up — orchestrator=%s strict=%s log_raw=%s heartbeat=%ss read_timeout=%s",
         settings.run_url,
         settings.strict,
         settings.log_raw,
         settings.heartbeat_seconds,
+        settings.read_timeout,
     )
 
 
@@ -69,7 +75,7 @@ async def healthz() -> dict[str, str]:
 async def healthz_upstream() -> JSONResponse:
     """Whether the orchestrator itself is reachable."""
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=settings.connect_timeout) as client:
         response = await client.get(
             settings.healthcheck_url,
             headers={"Authorization": f"Bearer {settings.api_key}"},
@@ -80,10 +86,10 @@ async def healthz_upstream() -> JSONResponse:
 @app.post("/ask")
 async def ask(body: AskRequest, request: Request) -> StreamingResponse:
     settings = get_settings()
-    request_id = new_request_id()
+    trace = TraceIds.new(settings.trace_id_prefix)
 
     return StreamingResponse(
-        _relay(settings, request, body, request_id),
+        _relay(settings, request, body, trace),
         media_type="text/event-stream",
         headers={
             # Some proxies hold a response and deliver it all at once when it
@@ -91,13 +97,9 @@ async def ask(body: AskRequest, request: Request) -> StreamingResponse:
             "X-Accel-Buffering": "no",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Request-Id": request_id,
+            "X-Trace-Id": trace.public,
         },
     )
-
-
-def encode(event: WireEvent) -> bytes:
-    return f"event: {event.name}\ndata: {json.dumps(event.data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 async def _pump(
@@ -105,7 +107,7 @@ async def _pump(
     request_log: RequestLog,
     transformer: Transformer,
     body: AskRequest,
-    request_id: str,
+    trace: TraceIds,
     queue: asyncio.Queue,
 ) -> None:
     """Read the orchestrator, transform, and post results for the writer.
@@ -120,8 +122,8 @@ async def _pump(
             settings,
             request_log,
             question=body.question,
-            request_id=request_id,
-            chat_id=body.chat_id,
+            request_id=trace.genos,
+            chat_id=body.session_id,
             user_id=body.user_id,
         ):
             for wire in transformer.handle(name, payload):
@@ -137,15 +139,23 @@ async def _relay(
     settings: Settings,
     request: Request,
     body: AskRequest,
-    request_id: str,
+    trace: TraceIds,
 ) -> AsyncIterator[bytes]:
-    request_log = RequestLog(request_id=request_id, log_raw=settings.log_raw)
-    transformer = Transformer(settings, request_log)
+    request_log = RequestLog(request_id=trace.public, log_raw=settings.log_raw)
+    run = RunContext(settings=settings, session_id=body.session_id, user_turn_id=body.user_turn_id)
+    transformer = Transformer(settings, request_log, run)
+    sequencer = Sequencer(trace_id=trace.public, timezone=settings.timezone)
     queue: asyncio.Queue = asyncio.Queue()
 
-    log.info("[%s] ask question=%r chat_id=%s", request_id, body.question, body.chat_id)
+    log.info(
+        "[%s] ask question=%r session_id=%s genos_trace_id=%s",
+        trace.public,
+        body.question,
+        body.session_id,
+        trace.genos,
+    )
 
-    pump = asyncio.create_task(_pump(settings, request_log, transformer, body, request_id, queue))
+    pump = asyncio.create_task(_pump(settings, request_log, transformer, body, trace, queue))
     reason, detail = "completed", None
 
     try:
@@ -157,7 +167,8 @@ async def _relay(
                 # dead connection to anything in between, so say we are still here.
                 if await request.is_disconnected():
                     raise ClientGone from None
-                yield b": ping\n\n"
+                request_log.emitted()
+                yield sequencer.encode(WireEvent(PING, {}))
                 continue
 
             if item is None:
@@ -166,24 +177,24 @@ async def _relay(
                 raise item
 
             request_log.emitted()
-            yield encode(item)
+            yield sequencer.encode(item)
 
     except ClientGone:
-        reason, detail = "client_disconnected", None
-        log.info("[%s] client disconnected — cancelling the orchestrator request", request_id)
+        reason = "client_disconnected"
+        log.info("[%s] client disconnected — cancelling the orchestrator request", trace.public)
     except asyncio.CancelledError:
         # uvicorn cancels the response task when the socket goes away.
-        reason, detail = "client_disconnected", None
-        log.info("[%s] response cancelled — cancelling the orchestrator request", request_id)
+        log.info("[%s] response cancelled — cancelling the orchestrator request", trace.public)
+        await _cancel(pump)
         raise
     except BaseException as exc:  # noqa: BLE001
         reason, detail = "upstream_error", f"{type(exc).__name__}: {exc}"
         # Loudly, with the whole traceback. Nothing here turns a crash into a
         # polite message; the frontend gets a closing event and the log gets the
         # real failure.
-        log.exception("[%s] stream failed", request_id)
+        log.exception("[%s] stream failed", trace.public)
         if settings.strict:
-            async for chunk in _closing(transformer, request_log, reason, detail):
+            async for chunk in _closing(settings, transformer, sequencer, request_log, reason, detail):
                 yield chunk
             request_log.finished(reason, detail)
             await _cancel(pump)
@@ -194,23 +205,31 @@ async def _relay(
     # Normal finish and client disconnect both land here. Whatever the rules are
     # still holding is released first, then exactly one closing event — otherwise
     # the frontend cannot tell "still thinking" from "crashed" and spins forever.
-    async for chunk in _closing(transformer, request_log, reason, detail):
+    async for chunk in _closing(settings, transformer, sequencer, request_log, reason, detail):
         yield chunk
     request_log.finished(reason, detail)
 
 
-async def _closing(  # noqa: D401
+async def _closing(
+    settings: Settings,
     transformer: Transformer,
+    sequencer: Sequencer,
     request_log: RequestLog,
     reason: str,
     detail: str | None,
 ) -> AsyncIterator[bytes]:
+    """Flush what the rules are holding, then `error` if any, then `run.end`."""
     for wire in transformer.flush():
         request_log.emitted()
-        yield encode(wire)
+        yield sequencer.encode(wire)
+
+    if reason == "upstream_error":
+        request_log.emitted()
+        yield sequencer.encode(error_event(settings, detail))
+
     for wire in transformer.emit(RunFinished(reason=reason, detail=detail)):
         request_log.emitted()
-        yield encode(wire)
+        yield sequencer.encode(wire)
 
 
 async def _cancel(task: asyncio.Task) -> None:

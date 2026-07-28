@@ -8,9 +8,10 @@ Two things here exist because of what job zero found, not because of theory:
 - Chunks split mid-line *and* mid-UTF-8-character, so bytes accumulate in a
   buffer and are only decoded once a complete block is in hand. Decoding each
   chunk on its own corrupts Korean text.
-- There is no read timeout. A sub-agent thinking for ninety seconds sends
-  nothing during that time and looks exactly like a dead connection; a timeout
-  short enough to be useful would kill healthy streams.
+- There is normally no read timeout (timeouts.read_seconds = 0 in config.toml).
+  A sub-agent thinking for ninety seconds sends nothing during that time and
+  looks exactly like a dead connection; a timeout short enough to be useful
+  would kill healthy streams.
 """
 
 import json
@@ -20,10 +21,6 @@ import httpx
 
 from .config import RelayError, Settings
 from .telemetry import RequestLog
-
-# One `data:` block carrying the full node dump ran past 400 KB in job zero, so
-# the buffer has to tolerate blocks far larger than any default line limit.
-MAX_BLOCK_BYTES = 8 * 1024 * 1024
 
 
 def build_request(
@@ -61,7 +58,7 @@ async def stream_orchestrator(
 
     timeout = httpx.Timeout(
         connect=settings.connect_timeout,
-        read=None,  # see the module docstring
+        read=settings.read_timeout,  # normally None; see the module docstring
         write=settings.write_timeout,
         pool=settings.connect_timeout,
     )
@@ -75,8 +72,10 @@ async def stream_orchestrator(
             buffer = bytearray()
             async for chunk in response.aiter_bytes():
                 buffer.extend(chunk)
-                if len(buffer) > MAX_BLOCK_BYTES:
-                    raise RelayError(f"upstream block exceeded {MAX_BLOCK_BYTES} bytes without a separator")
+                if len(buffer) > settings.max_block_bytes:
+                    raise RelayError(
+                        f"upstream block exceeded {settings.max_block_bytes} bytes without a separator"
+                    )
                 while b"\n\n" in buffer:
                     head, _, rest = buffer.partition(b"\n\n")
                     buffer = bytearray(rest)

@@ -27,6 +27,25 @@ from .events import (
 )
 from .rules import Ignore, Map, Rule
 
+
+def identify_tool(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The real sub-agent name and its arguments, out of one tool-call record.
+
+    The orchestrator reaches its sub-agents through an MCP wrapper, so `tool` is
+    literally "invoke_tool" and the sub-agent's own name is buried in
+    `toolInput.tool_name`. Reading `tool` alone reports every sub-agent as
+    "invoke_tool".
+
+    Shared with final_payload.py so the streamed events and the final answer
+    object name the same call the same way.
+    """
+    name = entry["tool"]
+    arguments = entry.get("toolInput") or {}
+    if name == "invoke_tool" and isinstance(arguments, dict) and "tool_name" in arguments:
+        return arguments["tool_name"], arguments.get("arguments") or {}
+    return name, arguments if isinstance(arguments, dict) else {"value": arguments}
+
+
 # ---------------------------------------------------------------------------
 # Rules that need memory
 # ---------------------------------------------------------------------------
@@ -126,27 +145,17 @@ class ToolCallRule(Rule):
     `calledTools` entries are appended and `usedTools` entries are matched against
     what has already been announced.
 
-    The real sub-agent name is nested inside `toolInput.tool_name` when the
-    orchestrator goes through the MCP `invoke_tool` wrapper; `tool` alone would
-    report every sub-agent as "invoke_tool".
+    Naming of each call goes through identify_tool above.
     """
 
     def __init__(self) -> None:
         self.announced: list[tuple[str, dict[str, Any]]] = []
         self.finished = 0
 
-    @staticmethod
-    def _identify(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        name = entry["tool"]
-        arguments = entry.get("toolInput") or {}
-        if name == "invoke_tool" and isinstance(arguments, dict) and "tool_name" in arguments:
-            return arguments["tool_name"], arguments.get("arguments") or {}
-        return name, arguments if isinstance(arguments, dict) else {"value": arguments}
-
     def called(self, value: Any) -> Iterable[Any]:
         out = []
         for entry in value:
-            name, arguments = self._identify(entry)
+            name, arguments = identify_tool(entry)
             self.announced.append((name, arguments))
             out.append(ToolStarted(name=name, arguments=arguments))
         return out
@@ -154,7 +163,7 @@ class ToolCallRule(Rule):
     def used(self, value: Any) -> Iterable[Any]:
         out = []
         for entry in value[self.finished :]:
-            name, arguments = self._identify(entry)
+            name, arguments = identify_tool(entry)
             out.append(ToolFinished(name=name, arguments=arguments, output=entry.get("toolOutput") or None))
         self.finished = len(value)
         return out

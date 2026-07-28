@@ -11,6 +11,7 @@ rather than a refactor.
 from typing import Any
 
 from .config import RelayError
+from .inbound import identify_tool
 
 # The orchestrator's answer text opens with this literal marker.
 RESULT_MARKER = "\n\nRESULT: "
@@ -56,8 +57,10 @@ def shape_final_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "chat_id": payload.get("chatId"),
         "message_id": payload.get("chatMessageId"),
         "session_id": payload.get("sessionId"),
+        # Named through the same helper the streamed events use, so the final
+        # object and the stream agree on what each sub-agent was called.
         "tools_used": [
-            {"name": entry.get("tool"), "arguments": entry.get("toolInput")}
-            for entry in _flatten_used_tools(payload.get("usedTools"))
+            {"name": name, "arguments": arguments}
+            for name, arguments in (identify_tool(e) for e in _flatten_used_tools(payload.get("usedTools")))
         ],
     }

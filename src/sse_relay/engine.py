@@ -20,11 +20,12 @@ from .telemetry import RequestLog
 class Transformer:
     """One per request. Owns the rule objects and therefore their memory."""
 
-    def __init__(self, settings: Settings, request_log: RequestLog):
+    def __init__(self, settings: Settings, request_log: RequestLog, run: outbound.RunContext):
         self.settings = settings
         self.log = request_log
+        self.run = run
         self.inbound_rules = inbound.build_rules()
-        self.outbound_rules = outbound.build_rules()
+        self.outbound_rules = outbound.build_rules(run)
 
     # -- step 1 ------------------------------------------------------------
 

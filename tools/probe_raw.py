@@ -14,28 +14,24 @@ Usage:
 import argparse
 import asyncio
 import json
-import os
 import pathlib
 import time
 import uuid
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+from sse_relay.config import load_settings
 
 CAPTURES = pathlib.Path(__file__).resolve().parent.parent / "captures"
 
 
 async def capture(name: str, question: str, stream: bool, chat_id: str | None) -> None:
-    base = os.environ["ORCHESTRATOR_BASE_URL"].rstrip("/")
-    workflow_id = os.environ["ORCHESTRATOR_WORKFLOW_ID"]
-    key = os.environ["orchestrator_key"]
+    settings = load_settings()
 
-    url = f"{base}/api/gateway/workflow/{workflow_id}/run/v2"
+    url = settings.run_url
     trace_id = str(uuid.uuid4())
     headers = {
-        "Authorization": f"Bearer {key}",
+        "Authorization": f"Bearer {settings.api_key}",
         "Content-Type": "application/json",
         "x-genos-trace-id": trace_id,
     }
@@ -58,9 +54,14 @@ async def capture(name: str, question: str, stream: bool, chat_id: str | None) -
     chunks = 0
     total_bytes = 0
 
-    # read=None: a sub-agent can think for a long time without sending anything,
-    # and that is not a dead connection.
-    timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+    # No read timeout by default: a sub-agent can think for a long time without
+    # sending anything, and that is not a dead connection.
+    timeout = httpx.Timeout(
+        connect=settings.connect_timeout,
+        read=settings.read_timeout,
+        write=settings.write_timeout,
+        pool=settings.connect_timeout,
+    )
 
     with raw_path.open("wb") as raw_f, jsonl_path.open("w", encoding="utf-8") as jsonl_f:
         async with httpx.AsyncClient(timeout=timeout) as client:
