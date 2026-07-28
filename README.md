@@ -23,20 +23,30 @@ curl -N -X POST localhost:8080/ask -H 'Content-Type: application/json' \
 
 ## Deploying as a GenOS code serving
 
-A code serving revision is four fields: language, build command, start command,
-and environment variables. There is no Dockerfile — the platform builds the repo
-with the build command in a Python base image and runs the start command.
+The platform runs its own container harness — gunicorn with a UvicornWorker on
+port 8080 — and finds the app in one of two ways (observed from real deploy
+logs, 2026-07-28):
+
+1. a repo-provided `main.py`, used directly by the entrypoint when present;
+2. otherwise a platform scaffold that does `from service import service`.
+
+This repo satisfies both: `main.py` exposes `app` (and runs standalone via
+`python main.py`, reading `$PORT`), and `service.py` exposes the same ASGI app
+as `service`. Both put `src/` on the path themselves, so no install of the
+package is needed — only `pip install -r requirements.txt`.
 
 | field | value |
 | ----- | ----- |
 | language | `python` |
 | build command | `pip install -r requirements.txt` |
-| start command | `python main.py` |
-| envs | `orchestrator_key` (required); `PORT` if the platform expects a specific one |
+| start command | `python main.py` (may be ignored — the harness has its own) |
+| envs | `orchestrator_key` (required) |
 
-`main.py` exists exactly for this: it puts `src/` on the path so nothing needs
-`pip install .`, reads `$PORT` (default 8080), and binds 0.0.0.0. The
-`uvicorn main:app --host 0.0.0.0 --port 8080` style works too.
+**Deploying the right commit:** the revision snapshots a git branch/commit.
+This service lives on its feature branch until merged — if the serving's git
+connection points at an empty default branch, the container has no code and the
+scaffold fails with `cannot import name 'service'`. Check the revision's branch
+and commit hash first when the log shows import errors.
 
 If `orchestrator_key` is missing from envs the app fails at startup on purpose,
 with a message saying exactly which variable to set — look in the container
