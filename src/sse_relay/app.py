@@ -67,6 +67,7 @@ async def _startup() -> None:
 
 
 @app.get("/healthz")
+@app.get("/health")  # the GenOS serving harness probes this exact path
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
