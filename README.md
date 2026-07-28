@@ -21,6 +21,34 @@ curl -N -X POST localhost:8080/ask -H 'Content-Type: application/json' \
   -d '{"question":"이번 달 예산 설정 알려줘","session_id":"sess:abc","user_turn_id":"turn:12"}'
 ```
 
+## Deploying as a GenOS code serving
+
+A code serving revision is four fields: language, build command, start command,
+and environment variables. There is no Dockerfile — the platform builds the repo
+with the build command in a Python base image and runs the start command.
+
+| field | value |
+| ----- | ----- |
+| language | `python` |
+| build command | `pip install -r requirements.txt` |
+| start command | `python main.py` |
+| envs | `orchestrator_key` (required); `PORT` if the platform expects a specific one |
+
+`main.py` exists exactly for this: it puts `src/` on the path so nothing needs
+`pip install .`, reads `$PORT` (default 8080), and binds 0.0.0.0. The
+`uvicorn main:app --host 0.0.0.0 --port 8080` style works too.
+
+If `orchestrator_key` is missing from envs the app fails at startup on purpose,
+with a message saying exactly which variable to set — look in the container
+logs. After deploying, the request sits in an approval queue before the
+container starts; then the log panel walks through scheduling → initializing →
+running, and build problems surface there as `CrashLoopBackOff` or similar.
+
+Once running, the endpoint is
+`{genos_url}/api/gateway/code_serving/{serving_id}/ask` with the serving's own
+bearer key. Check that streaming survives the gateway: the first `message.delta`
+must arrive seconds before `run.end`, not together with it.
+
 ## Configuration
 
 Everything lives in [`config.toml`](config.toml) — orchestrator URL, workflow id,

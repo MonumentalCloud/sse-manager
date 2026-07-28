@@ -1,0 +1,8 @@
+# Runtime dependencies, for platforms that build with `pip install -r requirements.txt`
+# (GenOS code serving does). Keep in sync with pyproject.toml — pyproject is the
+# source of truth for local development, this file exists for the deploy builder.
+fastapi>=0.115
+httpx>=0.28
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+tomli>=2.0; python_version < "3.11"

@@ -8,7 +8,12 @@ the environment, so config.toml stays safe to commit.
 
 import os
 import pathlib
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11 — the deploy image may be older
+    import tomli as tomllib
+
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
