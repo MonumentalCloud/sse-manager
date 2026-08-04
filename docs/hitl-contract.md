@@ -61,6 +61,28 @@ Verified behavior:
 - Errors surface as `agentFlowEvent: "ERROR"` plus the failing node's error in
   `agentFlowExecutedData` — the stream still terminates cleanly.
 
+## Edge cases (measured, 2026-08-04, workflow 2797)
+
+| scenario | what actually happens |
+|---|---|
+| resume with a wrong `startNodeId` | HTTP **200** with `{"code":1,"error_code":"00020003","errMsg":"No error message provided"}` |
+| resume a session whose last run ERRORED | identical generic error envelope |
+| resume a second time (replay) | works if the flow stopped again (each stop is fresh); against a finished run, the generic error |
+| plain question (no `humanInput`) while STOPPED | **no error** — the old checkpoint is abandoned and a brand-new run starts from Start, chat history intact |
+| resume after such an interleaved question | targets the **newest** STOPPED execution for the session |
+| transient 502 (nginx HTML) | seen once mid-battery; retry succeeded — clients need one retry on 5xx |
+
+Consequences for a frontend:
+
+- **Check `code` in the body, not the HTTP status** — engine failures arrive as
+  HTTP 200 with `code: 1`, and the gateway strips the engine's descriptive
+  message, so failure causes are indistinguishable. Treat any `code != 0` on a
+  resume as "this question is no longer answerable; re-ask."
+- **Buttons must not assume exclusivity** — a typed message silently invalidates
+  the pending question. After any user turn, the only trustworthy pending
+  question is the one from the *latest* response.
+- One retry on 5xx is warranted; the platform hiccups.
+
 ## Constraints (unchanged from the source reading)
 
 - The node lane is **binary**: `mapping` is hardcoded approve/reject. Custom
