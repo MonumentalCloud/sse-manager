@@ -90,17 +90,36 @@ Consequences for a frontend:
 - Resume requires the previous execution for (sessionId, workflow) to be in
   state `STOPPED`; anything else is refused by the engine.
 
-## The tool lane (`request_user_input`) — still unverified
+## The tool lane (A2A HITL) — spec-defined, one capture from confirmed
 
-The internal platform ships a `request_user_input` tool (seen in workflow 2791's
-master agent) with `type ∈ {confirm, single-select, multi-select}` and
-`options[{value,label,desc}]` — the custom-choice lane. In the 2797 test the
-tool was **not attached** to the agent, and the model faked the call as literal
-text. To measure that lane: attach `request_user_input` to Agent 0's tool list
-(and detach the Human Input node so the lanes don't stack), rerun the
-`단일테스트` trigger, and capture the stop shape and resume shape — they may
-differ from the node lane (likely richer `elements`, and possibly the
-`x-genos-a2a-extensions: …/hitl-ui/v1` machinery).
+Now documented by the platform (see `docs/vendor/a2a-agent-manual.md` and
+`docs/vendor/a2a-hitl-ui-extension-v1.md`). The mechanics:
+
+- `request_user_input` is **auto-provided to a sub-agent** when the master's
+  HITL toggle is on — it is never attached manually (why every standalone-agent
+  test failed to fire it).
+- The tool call becomes an A2A `input-required` Task: question in `Part.text`,
+  `{component: {type, options}, interactionId}` in `Part.data`.
+- The master saves its execution `STOPPED` and surfaces the confirm UI —
+  same checkpoint machinery as the node lane we measured.
+- The user's answer is `{interactionId, action: "submit"|"cancel",
+  values: {selected: [...], customInput?}}`; `submit` maps to Flowise
+  `proceed`, `cancel` to `reject`. single-select: one selected XOR customInput;
+  multi-select: both allowed; confirm: no values.
+- Components: `confirm`, `single-select`, `multi-select`; `직접 입력` row is
+  auto-added to select components. Unknown component = error; interrupt with no
+  component renders as `confirm`.
+
+**The one unmeasured detail**: the exact `run/v2` body the frontend sends to
+carry `{interactionId, action, values}` into the master's resume — most likely
+`humanInput: {type: proceed|reject, startNodeId, feedback: <values JSON>}` on
+today's measured resume shape, but this must be captured, not assumed.
+
+Test recipe (corrected per the manual): sub-agent workflow with the trigger
+prompt, **exposed as an A2A agent and redeployed**; master workflow
+`Start → A2A Agent 노드` targeting it with HITL 전달 ON + 중계 ON; run
+`단일테스트` against the master, capture the stop tail (expect `action`
+carrying the component + interactionId) and then the resume.
 
 ## What this means for the relay
 
