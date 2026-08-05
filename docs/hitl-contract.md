@@ -90,36 +90,43 @@ Consequences for a frontend:
 - Resume requires the previous execution for (sessionId, workflow) to be in
   state `STOPPED`; anything else is refused by the engine.
 
-## The tool lane (A2A HITL) — spec-defined, one capture from confirmed
+## The tool lane (A2A HITL) — spec-defined, NOT implemented on this instance
 
-Now documented by the platform (see `docs/vendor/a2a-agent-manual.md` and
-`docs/vendor/a2a-hitl-ui-extension-v1.md`). The mechanics:
+Documented by the platform (see `docs/vendor/a2a-agent-manual.md` and
+`docs/vendor/a2a-hitl-ui-extension-v1.md`), but **measured absent**
+(2026-08-05, internal instance, master 2810 `Start → A2A Agent 노드` →
+sub card 145, HITL 전달 ON, everything freshly deployed). Findings, each
+one from a real wire capture:
 
-- `request_user_input` is **auto-provided to a sub-agent** when the master's
-  HITL toggle is on — it is never attached manually (why every standalone-agent
-  test failed to fire it).
-- The tool call becomes an A2A `input-required` Task: question in `Part.text`,
-  `{component: {type, options}, interactionId}` in `Part.data`.
-- The master saves its execution `STOPPED` and surfaces the confirm UI —
-  same checkpoint machinery as the node lane we measured.
-- The user's answer is `{interactionId, action: "submit"|"cancel",
-  values: {selected: [...], customInput?}}`; `submit` maps to Flowise
-  `proceed`, `cancel` to `reject`. single-select: one selected XOR customInput;
-  multi-select: both allowed; confirm: no values.
-- Components: `confirm`, `single-select`, `multi-select`; `직접 입력` row is
-  auto-added to select components. Unknown component = error; interrupt with no
-  component renders as `confirm`.
+1. **Protocol mismatch, instance-wide.** Every `/a2a/{id}` endpoint — including
+   a registration created the same day (card 144) — implements only the legacy
+   dialect: `tasks/send` works, `message/send` returns JSON-RPC `-32601`
+   byte-identical to a garbage method, while the agent cards falsely advertise
+   `protocolVersion: "0.3.0"`. The dynamic **Agent 노드**'s client speaks
+   `message/send` (per manual §8 internal targets run "v0.3 호환 모드"), so
+   every new master fails with `a2aAgentUsed … "Unknown method: message/send"`.
+   Old masters keep working because their clients predate the rename
+   (`tasks/send` era). **Workaround measured:** the deterministic
+   **A2A Agent 노드** (manual §5) reaches the sub fine.
+2. **`request_user_input` is never injected.** With the master's HITL 전달
+   toggle ON, the sub's Agent node input carries `messages` only — no tools
+   array. Prompted to call the tool, the sub's model can only emit the call as
+   plain text. No `input-required`, no `interactionId`, no `component`
+   anywhere in the stream.
+3. **A Human Input 노드 inside the sub does not propagate.** The sub's flow
+   stops internally, but the A2A server wraps its accumulated text (the
+   question itself) in a **`completed`** task; the master finishes normally
+   and the frontend receives the question as the final answer. Nothing is
+   resumable: `contextId` is always empty, each master call mints a fresh
+   `taskId`, and a follow-up message simply abandons the sub's checkpoint
+   (same abandon semantics as the node lane).
 
-**The one unmeasured detail**: the exact `run/v2` body the frontend sends to
-carry `{interactionId, action, values}` into the master's resume — most likely
-`humanInput: {type: proceed|reject, startNodeId, feedback: <values JSON>}` on
-today's measured resume shape, but this must be captured, not assumed.
-
-Test recipe (corrected per the manual): sub-agent workflow with the trigger
-prompt, **exposed as an A2A agent and redeployed**; master workflow
-`Start → A2A Agent 노드` targeting it with HITL 전달 ON + 중계 ON; run
-`단일테스트` against the master, capture the stop tail (expect `action`
-carrying the component + interactionId) and then the resume.
+Conclusion: the vendor manual documents a newer platform build than what is
+deployed. Until the A2A server component is upgraded (owner: GenOS platform
+team), the only HITL that works end-to-end through the gateway is the node
+lane above — a Human Input node in the **master** workflow. The extension-v1
+shapes (`{interactionId, action, values}` and the run/v2 resume body carrying
+them) remain unmeasurable until then.
 
 ## What this means for the relay
 
